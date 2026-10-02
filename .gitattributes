@@ -1,0 +1,8 @@
+# Normalise line endings. A workflow file with CRLF fails on the ubuntu runner,
+# and this repository is edited on Windows, so autocrlf has to be pinned rather
+# than left to whatever the maintainer's global config says.
+* text=auto eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.rb    text eol=lf
+*.md    text eol=lf
