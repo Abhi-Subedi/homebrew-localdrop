@@ -1,0 +1,153 @@
+name: sync-formula
+
+# Keeps localdrop.rb pointed at the newest LocalDrop release.
+#
+# This runs on the tap's own GITHUB_TOKEN, which is scoped to this repository,
+# so it needs no PAT and no secret from anybody. The alternative - the parent
+# repo pushing here during a release - needs a fine-grained PAT, and a secret
+# that can only be created in a browser. That missing credential is exactly why
+# this formula sat here for months with unsubstituted placeholders while the
+# README advertised `brew install`.
+#
+# The substitution itself is NOT reimplemented here. It fetches the parent's
+# packaging/update-brew-formula.py so there is one implementation of "rewrite
+# the formula for release N", which is what the bug was: two copies of that
+# logic that disagreed.
+#
+# It commits only when something changed, so a no-op run is silent.
+
+on:
+  schedule:
+    # Daily. `brew upgrade` may lag up to 24h behind a release; that is the
+    # price of not requiring a PAT.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  repository_dispatch:
+    types: [localdrop-released]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-formula
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve the newest published release
+        id: newest
+        run: |
+          set -euo pipefail
+          tag=$(curl -fsSL -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/Abhi-Subedi/LocalDrop/releases/latest \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
+          echo "tag=$tag"    >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "newest release: $tag"
+
+      - name: Already current?
+        id: current
+        run: |
+          set -euo pipefail
+          pinned=$(sed -n 's/^  version "\([^"]*\)".*/\1/p' Formula/localdrop.rb | head -n1)
+          echo "pinned=$pinned" >> "$GITHUB_OUTPUT"
+          if [ "$pinned" = "${{ steps.newest.outputs.version }}" ]; then
+            echo "already at $pinned; nothing to do"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pinned=$pinned -> updating to ${{ steps.newest.outputs.version }}"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read the macOS digests from the published SHA256SUMS
+        if: steps.current.outputs.changed == 'true'
+        id: sums
+        run: |
+          set -euo pipefail
+          version="${{ steps.newest.outputs.version }}"
+          base="https://github.com/Abhi-Subedi/LocalDrop/releases/download/v$version"
+          curl -fsSL "$base/SHA256SUMS" -o SHA256SUMS
+          arm=$(grep "localdrop-$version-macos-arm64.tar.gz" SHA256SUMS | awk '{print $1}')
+          x64=$(grep "localdrop-$version-macos-x64.tar.gz"   SHA256SUMS | awk '{print $1}')
+          for v in "$arm" "$x64"; do
+            if ! printf '%s' "$v" | grep -Eq '^[0-9a-f]{64}$'; then
+              echo "::error::release v$version has no usable macOS checksum ('$v')"
+              exit 1
+            fi
+          done
+          echo "arm64=$arm" >> "$GITHUB_OUTPUT"
+          echo "x64=$x64"   >> "$GITHUB_OUTPUT"
+          echo "arm64=$arm"
+          echo "x64  =$x64"
+
+      - name: Confirm those artefacts are actually downloadable
+        if: steps.current.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          version="${{ steps.newest.outputs.version }}"
+          base="https://github.com/Abhi-Subedi/LocalDrop/releases/download/v$version"
+          for arch in arm64 x64; do
+            url="$base/localdrop-$version-macos-$arch.tar.gz"
+            code=$(curl -s -o /dev/null -w '%{http_code}' -L "$url")
+            echo "$arch -> HTTP $code"
+            [ "$code" = "200" ] || { echo "::error::$url returned $code"; exit 1; }
+          done
+
+      - name: Rewrite the formula with the parent's own script
+        if: steps.current.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          version="${{ steps.newest.outputs.version }}"
+          curl -fsSL \
+            https://raw.githubusercontent.com/Abhi-Subedi/LocalDrop/main/packaging/update-brew-formula.py \
+            -o update-brew-formula.py
+          python3 update-brew-formula.py \
+            --formula Formula/localdrop.rb \
+            --version "$version" \
+            --sha256-arm64 "${{ steps.sums.outputs.arm64 }}" \
+            --sha256-x64   "${{ steps.sums.outputs.x64 }}"
+
+      - name: Verify the result is self-consistent
+        if: steps.current.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          version="${{ steps.newest.outputs.version }}"
+          arm="${{ steps.sums.outputs.arm64 }}"
+          x64="${{ steps.sums.outputs.x64 }}"
+          python3 update-brew-formula.py --formula Formula/localdrop.rb --version "$version" --check-only
+          grep -q "sha256 \"$arm\"" Formula/localdrop.rb || { echo "::error::arm64 digest not in formula"; exit 1; }
+          grep -q "sha256 \"$x64\"" Formula/localdrop.rb || { echo "::error::x64 digest not in formula"; exit 1; }
+          if grep -q PLACEHOLDER Formula/localdrop.rb; then
+            echo "::error::a placeholder survived"; exit 1
+          fi
+          urls=$(grep -c "^    url \"https://github.com/Abhi-Subedi/LocalDrop" Formula/localdrop.rb || true)
+          [ "$urls" = "2" ] || { echo "::error::expected 2 download URLs, found $urls"; exit 1; }
+          grep -q "v$version/localdrop-$version-macos-arm64.tar.gz" Formula/localdrop.rb \
+            || { echo "::error::arm64 URL does not point at v$version"; exit 1; }
+          grep -q "v$version/localdrop-$version-macos-x64.tar.gz" Formula/localdrop.rb \
+            || { echo "::error::x64 URL does not point at v$version"; exit 1; }
+          echo "verified: pinned $version, both digests present, both URLs rebased"
+
+      - name: Commit
+        if: steps.current.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          rm -f SHA256SUMS update-brew-formula.py
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/localdrop.rb
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+          else
+            git commit -m "localdrop ${{ steps.newest.outputs.version }}"
+            git push
+            echo "pushed localdrop ${{ steps.newest.outputs.version }}"
+          fi
