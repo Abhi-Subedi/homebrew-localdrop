@@ -18,7 +18,7 @@
 class Localdrop < Formula
   desc "Self-hosted, local-network-first file sharing"
   homepage "https://github.com/Abhi-Subedi/LocalDrop"
-  version "1.1.0"
+  version "1.1.2"
   license "AGPL-3.0-only"
 
   livecheck do
@@ -31,11 +31,11 @@ class Localdrop < Formula
   # build and a signed notarisation ticket, so releases ship raw tarballs.)
   # The slugs come from packaging/build-binary.py platform_slug().
   if Hardware::CPU.arm?
-    url "https://github.com/Abhi-Subedi/LocalDrop/releases/download/v1.1.0/localdrop-1.1.0-macos-arm64.tar.gz"
-    sha256 "8d7e15ba036790179b91aa3c0c22b44ef2e0d29140654bd258367dc67d53f2c7"
+    url "https://github.com/Abhi-Subedi/LocalDrop/releases/download/v1.1.2/localdrop-1.1.2-macos-arm64.tar.gz"
+    sha256 "dc26bc1e8cf223176c4ad9d63b61131be8362d54920c3d812f789e1e15d5e571"
   else
-    url "https://github.com/Abhi-Subedi/LocalDrop/releases/download/v1.1.0/localdrop-1.1.0-macos-x64.tar.gz"
-    sha256 "c557db4472351c30404c08185febbf0dc0cf37178cc79df9a0d7b584a2d9bc27"
+    url "https://github.com/Abhi-Subedi/LocalDrop/releases/download/v1.1.2/localdrop-1.1.2-macos-x64.tar.gz"
+    sha256 "0bf54398b5d6b8f1d507b2b24849135b11adecfdcdc7976a5ca151a2232672f6"
   end
 
   def install
